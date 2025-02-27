@@ -13,51 +13,6 @@ import {Navbar} from "@/components/ui/navbar";
 import {Footer} from "@/components/ui/footer";
 import { useSettingsStore } from '../stores/settingsStore';
 
-type CollaborationType =
-  | "analysis"
-  | "execution"
-  | "report"
-  | "question"
-  | "response"
-  | "suggestion"
-  | "decision"
-  | "simulation"
-  | "transaction"
-  | "tool-result"
-  | "handoff"
-  | "task-creation";
-
-interface Message {
-  role: "user" | "assistant" | "system";
-  content: string;
-  timestamp: string;
-  agentName?: string | undefined;
-  collaborationType?: CollaborationType | undefined;
-}
-
-interface AgentState {
-  isInitialized: boolean;
-  isProcessing: boolean;
-  error: string | null;
-  activeAgent: string | null;
-  systemEvents: Array<{
-    timestamp: string;
-    event: string;
-    agent?: string;
-    type: "info" | "warning" | "error" | "success";
-  }>;
-}
-
-interface Agent {
-  id: string;
-  name: string;
-  type: string;
-  status: string;
-  description: string;
-  message?: string;
-  agent?: any;
-}
-
 // Add a mapping for agent images
 const agentImages = {
   trading: "/agent_trader.png",
@@ -120,11 +75,201 @@ interface AgentMessage {
   eventType?: "info" | "warning" | "error" | "success";
 }
 
+// Speech queue management
+const speechQueue: { text: string; resolve: () => void }[] = [];
+let isSpeaking = false;
+
+const processSpeechQueue = async () => {
+  if (isSpeaking || speechQueue.length === 0) return;
+  isSpeaking = true;
+  const { text, resolve } = speechQueue[0];
+  
+  try {
+    const audioData = await convertToSpeech(text);
+    const blob = new Blob([audioData], { type: 'audio/mpeg' });
+    const base64data = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+    
+    const audio = new Audio(base64data);
+    await new Promise((resolvePlay) => {
+      audio.onended = () => resolvePlay();
+      audio.play().catch(console.error);
+    });
+  } catch (error) {
+    console.error("Error in speech synthesis:", error);
+  } finally {
+    speechQueue.shift();
+    isSpeaking = false;
+    resolve();
+    processSpeechQueue();
+  }
+};
+
+const addToSpeechQueue = async (text: string): Promise<void> => {
+  return new Promise((resolve) => {
+    speechQueue.push({ text, resolve });
+    processSpeechQueue();
+  });
+};
+
+const convertToSpeech = async (text: string): Promise<Uint8Array> => {
+  try {
+    console.log("Starting text-to-speech conversion with text:", text);
+    
+    const API_KEY = 'sk_ce8270a67aa44352ebda95e6730eee33cb799490e739748f';
+    const VOICE_ID = 'JBFqnCBsd6RMkjVDRZzb';
+    
+    // Make direct fetch request to ElevenLabs API
+    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream`, {
+      method: 'POST',
+      headers: {
+        'Accept': 'audio/mpeg',
+        'Content-Type': 'application/json',
+        'xi-api-key': API_KEY.trim()
+      },
+      body: JSON.stringify({
+        text: text,
+        model_id: "eleven_multilingual_v2",
+        voice_settings: {
+          stability: 0.5,
+          similarity_boost: 0.5
+        }
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => 'No error details available');
+      console.error('ElevenLabs API Error Response:', {
+        status: response.status,
+        statusText: response.statusText,
+        errorDetails: errorText,
+        requestHeaders: {
+          'Accept': 'audio/mpeg',
+          'Content-Type': 'application/json',
+          'xi-api-key': 'sk_****' // Masked for logging
+        }
+      });
+      throw new Error(`ElevenLabs API error: ${response.status} ${response.statusText}\nDetails: ${errorText}`);
+    }
+
+    // Get the response as ArrayBuffer
+    const arrayBuffer = await response.arrayBuffer();
+    console.log("Got response from ElevenLabs API, size:", arrayBuffer.byteLength);
+    
+    if (arrayBuffer.byteLength === 0) {
+      throw new Error('Received empty response from ElevenLabs API');
+    }
+    
+    return new Uint8Array(arrayBuffer);
+  } catch (error) {
+    console.error("Error in convertToSpeech:", error);
+    throw error;
+  }
+};
+
+// Test function with a very short text
+const testElevenLabs = async () => {
+  try {
+    console.log("Testing ElevenLabs API...");
+    const testText = "Test.";
+    
+    const audioData = await convertToSpeech(testText);
+    console.log("Test successful! Got audio data of size:", audioData.length);
+    
+    // Create blob with explicit MIME type
+    const blob = new Blob([audioData], { 
+      type: 'audio/mpeg'
+    });
+    
+    // Convert to base64
+    const base64data = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+    
+    console.log("Created base64 audio data for test");
+    
+    // Create and play audio
+    const audio = new Audio();
+    
+    // Set up event listeners
+    audio.addEventListener('loadeddata', () => console.log('Test audio data loaded'));
+    audio.addEventListener('error', (e) => console.error('Test audio loading error:', e));
+    audio.addEventListener('playing', () => console.log('Test audio started playing'));
+    audio.addEventListener('ended', () => console.log('Test audio finished playing'));
+    
+    // Set the source and play
+    audio.src = base64data;
+    
+    try {
+      await audio.play();
+      console.log("Test audio playing!");
+    } catch (playError) {
+      console.error("Test audio playback failed:", playError);
+    }
+  } catch (error) {
+    console.error("ElevenLabs test failed:", error);
+  }
+};
+
+type CollaborationType =
+  | "analysis"
+  | "execution"
+  | "report"
+  | "question"
+  | "response"
+  | "suggestion"
+  | "decision"
+  | "simulation"
+  | "transaction"
+  | "tool-result"
+  | "handoff"
+  | "task-creation";
+
+interface Message {
+  role: "user" | "assistant" | "system";
+  content: string;
+  timestamp: string;
+  agentName?: string | undefined;
+  collaborationType?: CollaborationType | undefined;
+  audioUrl?: string;
+}
+
+interface AgentState {
+  isInitialized: boolean;
+  isProcessing: boolean;
+  error: string | null;
+  activeAgent: string | null;
+  systemEvents: Array<{
+    timestamp: string;
+    event: string;
+    agent?: string;
+    type: "info" | "warning" | "error" | "success";
+  }>;
+}
+
+interface Agent {
+  id: string;
+  name: string;
+  type: string;
+  status: string;
+  description: string;
+  message?: string;
+  agent?: any;
+}
+
 export default function Home() {
   const { settings } = useSettingsStore();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [autonomousMode, setAutonomousMode] = useState(false);
+  const [isTTSEnabled, setIsTTSEnabled] = useState(false);
   
   // Sample prompts data
   const samplePrompts = [
@@ -449,19 +594,11 @@ export default function Home() {
         { configurable: { sessionId: "user-1" } }
       );
 
-      console.log(initialAnalysis, "initialAnalysis", portfolioAgent);
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: initialAnalysis.output,
-          timestamp: new Date().toLocaleTimeString(),
-          agentId: "portfolio",
-          agentName: "Portfolio Manager",
-          collaborationType: "analysis",
-        },
-      ]);
+      await handleAgentResponse({
+        content: initialAnalysis.output,
+        agentName: "Portfolio Manager",
+        type: "analysis"
+      });
 
       const relevantAgents = agents.filter((agent) => {
         const messageContent = message.toLowerCase();
@@ -483,17 +620,11 @@ export default function Home() {
           { configurable: { sessionId: "user-1" } }
         );
 
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "assistant",
-            content: agentResponse.output,
-            timestamp: new Date().toLocaleTimeString(),
-            agentId: agent.id,
-            agentName: agent.name,
-            collaborationType: "suggestion",
-          },
-        ]);
+        await handleAgentResponse({
+          content: agentResponse.output,
+          agentName: agent.name,
+          type: "suggestion"
+        });
       }
 
       const finalConsensus = await portfolioAgent?.agent?.invoke(
@@ -503,17 +634,11 @@ export default function Home() {
         { configurable: { sessionId: "user-1" } }
       );
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: finalConsensus.output,
-          timestamp: new Date().toLocaleTimeString(),
-          agentId: "portfolio",
-          agentName: "Portfolio Manager",
-          collaborationType: "decision",
-        },
-      ]);
+      await handleAgentResponse({
+        content: finalConsensus.output,
+        agentName: "Portfolio Manager",
+        type: "decision"
+      });
     } else {
       // Handle regular chat mode
       // Check if this is an example query
@@ -561,17 +686,11 @@ export default function Home() {
         { configurable: { sessionId: "user-1" } }
       );
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: initialAnalysis.output,
-          timestamp: new Date().toLocaleTimeString(),
-          agentId: "portfolio",
-          agentName: "Portfolio Manager",
-          collaborationType: "analysis",
-        },
-      ]);
+      await handleAgentResponse({
+        content: initialAnalysis.output,
+        agentName: "Portfolio Manager",
+        type: "analysis"
+      });
 
       const relevantAgents = agents.filter((agent) => {
         const messageContent = message.toLowerCase();
@@ -593,17 +712,11 @@ export default function Home() {
           { configurable: { sessionId: "user-1" } }
         );
 
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "assistant",
-            content: agentResponse.output,
-            timestamp: new Date().toLocaleTimeString(),
-            agentId: agent.id,
-            agentName: agent.name,
-            collaborationType: "suggestion",
-          },
-        ]);
+        await handleAgentResponse({
+          content: agentResponse.output,
+          agentName: agent.name,
+          type: "suggestion"
+        });
       }
 
       const finalConsensus = await portfolioAgent?.agent?.invoke(
@@ -613,17 +726,28 @@ export default function Home() {
         { configurable: { sessionId: "user-1" } }
       );
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: finalConsensus.output,
-          timestamp: new Date().toLocaleTimeString(),
-          agentId: "portfolio",
-          agentName: "Portfolio Manager",
-          collaborationType: "decision",
-        },
-      ]);
+      await handleAgentResponse({
+        content: finalConsensus.output,
+        agentName: "Portfolio Manager",
+        type: "decision"
+      });
+    }
+  };
+
+  const handleAgentResponse = async (response: any) => {
+    try {
+      const newMessage: Message = {
+        role: "assistant",
+        content: response.message || response.content,
+        timestamp: new Date().toISOString(),
+        agentName: response.agentName || activeAgent,
+        collaborationType: response.type as CollaborationType,
+      };
+      setMessages(prev => deduplicateMessages([...prev, newMessage]));
+      await new Promise(r => setTimeout(r, 100));
+      if (isTTSEnabled) await addToSpeechQueue(newMessage.content);
+    } catch (error) {
+      console.error("Error handling agent response:", error);
     }
   };
 
@@ -854,13 +978,35 @@ export default function Home() {
           <div className="border-t border-white/10">
             <form onSubmit={handleSubmit} className="p-4">
               <div className="flex flex-col gap-4">
-                <div className="flex items-center justify-end gap-2">
-                  <label className="text-sm text-gray-400">Autonomous Mode</label>
-                  <Switch
-                    checked={autonomousMode}
-                    onCheckedChange={setAutonomousMode}
-                    className="data-[state=checked]:bg-blue-500"
-                  />
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-4">
+                    <div className="flex items-center space-x-2">
+                      <Switch
+                        checked={autonomousMode}
+                        onCheckedChange={setAutonomousMode}
+                        id="autonomous-mode"
+                      />
+                      <label
+                        htmlFor="autonomous-mode"
+                        className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                      >
+                        Autonomous Mode
+                      </label>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <Switch
+                        checked={isTTSEnabled}
+                        onCheckedChange={setIsTTSEnabled}
+                        id="tts-mode"
+                      />
+                      <label
+                        htmlFor="tts-mode"
+                        className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                      >
+                        Text to Speech
+                      </label>
+                    </div>
+                  </div>
                 </div>
                 <div className="flex gap-2">
                   <input
